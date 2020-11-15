@@ -1,0 +1,31 @@
+# TestExpr
+
+> import TestExpr exposing (..)
+> exec " 1 + 3 + (7 //2) "
+"OFloat 7" : String
+> exec " 1 + 3 + (7 /2) "
+"OFloat 7.5" : String
+> exec " 1 + 3 + (7 %2) "
+"OFloat 5" : String
+> exec " \"abc\" + \"ABC\" "
+"OString \"abcABC\"" : String
+> exec " False "
+"OBool False" : String
+> exec " True "
+"OBool True" : String
+> exec " True && True"
+"OBool True" : String
+> exec " True && False"
+"OBool False" : String
+> exec " True || True"
+"OBool True" : String
+> exec " True || False"
+"OBool True" : String
+
+
+# TestParse
+
+> import TestParse exposing (..)
+> r006
+Ok [Cmd (Var "Aaa") (Var "a12"),Cmd (Var "Baa") (Var "b12"),Cmd (Var "Baa") (Var "b12"),If (Var "ccc") [Cmd (Var "Ccc") (Var "ddd"),Cmd (Var "Ccc") (Var "ddd")] [Cmd (Var "Ddd") (Var "eee"),Cmd (Var "Ddd") (Var "eee")],While (Var "test1") [Cmd (Var "Ddd") (Var "a"),Cmd (Var "Ddd") (Var "a")],For (Var "test") (Var "range") [Cmd (Var "Str") (Var "zzzz"),Cmd (Var "Ddd") (Var "a"),Cmd (Var "Ddd") (Var "a")],For (Var "test") (Var "range") [Cmd (Var "Ddd") (Var "a"),Cmd (Var "Ddd") (Var "a"),If (Var "ccc") [Cmd (Var "Ccc") (Var "ddd"),Cmd (Var "Ccc") (Var "ddd")] [Cmd (Var "Ddd") (Var "eee"),Cmd (Var "Ddd") (Var "eee")]]]
+

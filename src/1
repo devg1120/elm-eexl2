@@ -1,0 +1,14 @@
+module TestParse exposing (..)
+
+
+import Parser exposing (..)
+
+{--
+ run : Parser a -> String -> Result (List DeadEnd) a
+
+--}
+
+r001 = run int "123456" 
+
+
+

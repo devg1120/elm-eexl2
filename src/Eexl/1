@@ -1,0 +1,692 @@
+module Eexl.Parse exposing (parse, parse2)
+
+import Eexl.Context as Context exposing (Context, Input , ArgValue(..))
+import Eexl.Eval as Eval exposing (T(..))
+import List.Extra
+import Parser exposing (..)
+import Set
+import Array
+import Regex
+
+type Operator
+    = BinaryOp String BinaryOpDef
+    | LParenOperator
+    | RParenOperator
+
+
+type Assoc
+    = AssocNone
+    | AssocLeftToRight
+    | AssocRightToLeft
+
+
+type alias BinaryOpDef =
+    { parser : Parser ()
+    , precedence : Int
+    , assoc : Assoc
+    , eval : T -> T -> Result String T
+    }
+
+
+operators : List Operator
+operators =
+    [ BinaryOp "^" { parser = symbol "^", precedence = 13, assoc = AssocRightToLeft, eval = Eval.exp }
+    , BinaryOp "*" { parser = symbol "*", precedence = 12, assoc = AssocLeftToRight, eval = Eval.mul }
+    , BinaryOp "+" { parser = symbol "+", precedence = 11, assoc = AssocLeftToRight, eval = Eval.add }
+    , BinaryOp "<=" { parser = backtrackable <| symbol "<=", precedence = 9, assoc = AssocNone, eval = Eval.lte }
+    , BinaryOp "<" { parser = symbol "<", precedence = 9, assoc = AssocNone, eval = Eval.lt }
+    , BinaryOp ">=" { parser = backtrackable <| symbol ">=", precedence = 9, assoc = AssocNone, eval = Eval.mte }
+    , BinaryOp ">" { parser = symbol ">", precedence = 9, assoc = AssocNone, eval = Eval.mt }
+    , BinaryOp "==" { parser = symbol "==", precedence = 8, assoc = AssocLeftToRight, eval = Eval.eq }
+    , BinaryOp "&&" { parser = symbol "&&", precedence = 4, assoc = AssocLeftToRight, eval = Eval.and }
+    , BinaryOp "||" { parser = symbol "||", precedence = 3, assoc = AssocLeftToRight, eval = Eval.or }
+    , LParenOperator
+    , RParenOperator
+    ]
+
+
+getPrecedenceAndAssociativity : List Operator -> Operator -> Maybe ( Int, Assoc )
+getPrecedenceAndAssociativity operators_ operator_ =
+    operators_
+        |> List.filter
+            (\op ->
+                case ( op, operator_ ) of
+                    ( BinaryOp n1 _, BinaryOp n2 _ ) ->
+                        n1 == n2
+
+                    ( LParenOperator, LParenOperator ) ->
+                        True
+
+                    ( RParenOperator, RParenOperator ) ->
+                        True
+
+                    otherwise ->
+                        False
+            )
+        |> List.head
+        |> Maybe.andThen
+            (\op ->
+                case op of
+                    BinaryOp _ { precedence, assoc } ->
+                        Just ( precedence, assoc )
+
+                    otherwise ->
+                        Nothing
+            )
+
+
+parse : Context -> String -> Result (List DeadEnd) T
+parse context string =
+    run (expression context) string
+
+parse2 : Context -> String -> Result (List DeadEnd) (List Stmt)
+parse2 context string =
+    run (script context) string
+
+int : Parser Int
+int =
+    oneOf
+        [ succeed negate
+            |. symbol "-"
+            |= Parser.int
+        , Parser.int
+        ]
+
+float : Parser Float
+float =
+    oneOf
+        [ succeed negate
+            |. symbol "-"
+            |= Parser.float
+        , Parser.float
+        ]
+
+bool : Parser Bool
+bool =
+    oneOf
+        [ map (\_ -> True) (keyword "true")
+        , map (\_ -> False) (keyword "false")
+        ]
+
+
+
+-- not : Context -> Parser Token
+-- not context =
+--     succeed Not
+--         |. symbol "!"
+--         |= lazy (\_ -> expression context)
+
+
+--var : Context -> Parser Int
+var : Context -> Parser T
+var context =
+    succeed identity
+        |= variable
+            { start = Char.isLower
+            , inner = Char.isAlphaNum
+            , reserved = Set.empty
+            }
+        |. spaces
+        |> andThen
+            (\name ->
+                Context.getConstant name context
+                    |> Maybe.map succeed
+                    |> Maybe.withDefault (problem <| "Unknown variable '" ++ name ++ "'")
+            )
+
+
+operator : Parser Operator
+operator =
+    operators
+        |> List.map
+            (\op ->
+                case op of
+                    BinaryOp _ { parser } ->
+                        map (\_ -> op) parser
+
+                    LParenOperator ->
+                        map (\_ -> LParenOperator) (symbol "(")
+
+                    RParenOperator ->
+                        map (\_ -> RParenOperator) (symbol ")")
+            )
+        |> oneOf
+
+
+operatorHelp : Operator -> ( List T, List Operator ) -> Parser ( List T, List Operator )
+operatorHelp op ( exprStack, operatorStack ) =
+    let
+        {- There is a function at the top of the operator stack -}
+        functionAtTopOfStack : List Operator -> Bool
+        functionAtTopOfStack stack =
+            -- List.head stack == FunctionOperator -- FUNCTIONS IMPLEMENTED USING SUBSTITUTION FOR THE MOMENT
+            False
+
+        {- There is an operator at the top of the operator stack with greater precedence OR
+           The operator at the top of the operator stack has equal precedence and is left associative
+        -}
+        higherPrecedenceAtTopOfStack : List Operator -> Operator -> Bool
+        higherPrecedenceAtTopOfStack stack currentOperator =
+            Maybe.map2
+                (\( opPrecedence, opAssociativity ) ( stackPrecedence, stackAssociativity ) ->
+                    (stackPrecedence > opPrecedence)
+                        || (stackPrecedence == opPrecedence && stackAssociativity == AssocLeftToRight)
+                )
+                (getPrecedenceAndAssociativity operators currentOperator)
+                (List.head stack |> Maybe.andThen (getPrecedenceAndAssociativity operators))
+                |> Maybe.withDefault False
+
+        {- The operator at the top of the operator stack is not a left bracket -}
+        leftParentAtTopOfStack : List Operator -> Bool
+        leftParentAtTopOfStack stack =
+            List.head stack == Just LParenOperator
+    in
+    {- while (condition) -}
+    if (functionAtTopOfStack operatorStack || higherPrecedenceAtTopOfStack operatorStack op) && not (leftParentAtTopOfStack operatorStack) then
+        {- Apply an operator from the operator stack to the output queue and recurse -}
+        case ( exprStack, operatorStack ) of
+            ( rhs :: lhs :: es, (BinaryOp _ topOperator) :: os ) ->
+                case applyBinaryOp topOperator lhs rhs of
+                    Ok t ->
+                        operatorHelp op ( t :: es, os )
+
+                    Err err ->
+                        problem err
+
+            otherwise ->
+                problem "This can't happen AFAIK"
+
+    else
+        {- Push it onto the operator stack. -}
+        succeed ( exprStack, op :: operatorStack )
+
+-------------------------------------------------------------
+--  "aaa","bbb","ccc"  to List
+--
+
+stringValues : Parser  ListValue
+stringValues =
+  succeed   (::)
+    |. spaces
+    |. symbol "\""
+    |= getChompedString (chompWhile (\c -> c /= '"'))
+    |. symbol "\""
+    |. spaces
+    |= stringValuesTail
+    |> andThen
+            (\( arg ) ->
+                 succeed (ListString arg)
+            )
+
+
+stringValuesTail : Parser (List String)
+stringValuesTail =
+  oneOf
+    [ succeed (::)
+        |. symbol ","
+        |. spaces
+        |. symbol "\""
+        |= getChompedString (chompWhile (\c -> c /= '"'))
+        |. symbol "\""
+        |. spaces
+        |= lazy (\_ ->  stringValuesTail)
+    , succeed  []
+    ]
+
+
+--  1, 2, 3  to List
+--
+intValues : Parser ListValue
+intValues =
+  succeed (::)
+    |. spaces
+    |= int
+    |. spaces
+    |= intValuesTail
+    |> andThen
+            (\( arg ) ->
+                 succeed (ListInt arg)
+            )
+
+intValuesTail : Parser (List Int)
+intValuesTail =
+  oneOf
+    [ succeed (::)
+        |. symbol ","
+        |. spaces
+        |= int
+        |. spaces
+        |= lazy (\_ ->  intValuesTail)
+    , succeed []
+    ]
+
+
+--  1.1, 10.5, 9.99  to List
+--
+floatValues : Parser ListValue
+floatValues =
+  succeed (::)
+    |. spaces
+    |= float
+    |. spaces
+    |= floatValuesTail
+    |> andThen
+            (\( arg ) ->
+                 succeed (ListFloat arg)
+            )
+
+floatValuesTail : Parser (List Float)
+floatValuesTail =
+  oneOf
+    [ succeed (::)
+        |. symbol ","
+        |. spaces
+        |= float
+        |. spaces
+        |= lazy (\_ ->  floatValuesTail)
+    , succeed []
+    ]
+
+-------------------------------------------------------------
+type ListValue
+     = ListString (List String)
+     | ListInt (List Int)
+     | ListFloat (List Float)
+
+-------------------------------------------------------------
+
+stringValue : Parser ArgValue
+stringValue =
+  --succeed   (::)
+  succeed   Just
+    |. spaces
+    |. symbol "\""
+    |= getChompedString (chompWhile (\c -> c /= '"'))
+    |. symbol "\""
+    |. spaces
+    |> andThen
+            (\( arg ) ->
+                 succeed (AvString (arg   |> Maybe.withDefault "" ))
+            )
+
+
+intValue : Parser ArgValue
+intValue =
+  --succeed (::)
+  succeed   Just
+    |. spaces
+    |= int
+    |. spaces
+    |> andThen
+            (\( arg ) ->
+                 --succeed (AvInt arg)
+                 succeed (AvInt (arg   |> Maybe.withDefault 0 ))
+            )
+
+floatValue : Parser ArgValue
+floatValue =
+  --succeed (::)
+  succeed   Just
+    |. spaces
+    |= float
+    |. spaces
+    |> andThen
+            (\( arg ) ->
+                 --succeed (AvFloat arg)
+                 succeed (AvFloat (arg   |> Maybe.withDefault 0.0 ))
+            )
+
+---------------------------------------------
+varValue : Context -> Parser ArgValue
+varValue context =
+  succeed   Just
+    |. spaces
+    |= (var context)
+    |. spaces
+    |> andThen
+            (\( arg ) ->
+                 let
+                   r = case arg of
+                        Just (IntT n) ->
+                                 (AvInt   n)
+                        Just (FloatT n) ->
+                                 (AvFloat n)
+                        Just (StringT n)  ->
+                                 (AvString n)
+                        Just (BoolT n) ->
+                                 (AvBool  n)
+                        Nothing ->
+                                 (AvInt -1)
+                 in
+                 succeed (r)
+            )
+---------------------------------------------
+argValues : Context -> Parser (List ArgValue)
+argValues context =
+  succeed (::)
+    |. spaces
+    |= oneOf
+        [ backtrackable  stringValue
+        , backtrackable  intValue
+        , backtrackable  floatValue
+        , (varValue context)
+        ]
+    |. spaces
+    |= (argValuesTail context)
+    |> andThen
+            (\( arg ) ->
+                 succeed (arg)
+            )
+
+argValuesTail : Context -> Parser (List ArgValue)
+argValuesTail context =
+  oneOf
+    [ succeed (::)
+        |. symbol ","
+        |. spaces
+        |= oneOf
+            [ backtrackable  stringValue
+            , backtrackable  intValue
+            , backtrackable  floatValue
+            , (varValue context)
+            ]
+        |. spaces
+        |= lazy (\_ ->  (argValuesTail context))
+    , succeed []
+    ]
+
+-------------------------------------------------------------
+
+func : Context -> Parser T
+func context =
+    succeed Tuple.pair
+        |= backtrackable
+            (variable
+                { start = Char.isLower
+                , inner = Char.isAlphaNum
+                , reserved = Set.empty
+                }
+            )
+        |. backtrackable (symbol "(")
+        --|= stringValues
+        --|= oneOf
+        --    [ backtrackable  stringValues     -- ("AAA","BBB","CCC")
+        --    , backtrackable  intValues        -- (1, 2, 3)
+        --    ,  floatValues
+        --    ]
+        |= (argValues context)
+        |. symbol ")"
+        |> andThen
+            (\( name, arg ) ->
+                --let _ = Debug.log "func arg parse ..." 0 in
+                let
+                  --base = case arg of
+                  --         ListString arg_  ->
+                  --                let _ = Debug.log "ListString" 0 in
+                  --                ArrayString (Array.fromList arg_)
+                  --         ListInt arg_  ->
+                  --                let _ = Debug.log "ListInt" 0 in
+                  --                ArrayInt (Array.fromList arg_)
+                  --         ListFloat arg_  ->
+                  --                let _ = Debug.log "ListFloat" 0 in
+                  --                ArrayFloat (Array.fromList arg_)
+
+                  base = Array.fromList arg
+
+                in
+                Context.getFunction name context
+                    |> Maybe.map (\fn -> succeed <| fn base)
+                    |> Maybe.withDefault (problem <| "Unknown function '" ++ name ++ "'")
+            )
+
+{--
+func : Context -> Parser T
+func context =
+    succeed Tuple.pair
+        |= backtrackable
+            (variable
+                { start = Char.isLower
+                , inner = Char.isAlphaNum
+                , reserved = Set.empty
+                }
+            )
+        |. backtrackable (symbol "(")
+        --|= stringValues
+        |= oneOf
+            [ backtrackable  stringValues     -- ("AAA","BBB","CCC")
+            , backtrackable  intValues        -- (1, 2, 3)
+            ,  floatValues
+            ]
+        |. symbol ")"
+        |> andThen
+            (\( name, arg ) ->
+                --let _ = Debug.log "func arg parse ..." 0 in
+                let
+                  base = case arg of
+                           ListString arg_  ->
+                                  let _ = Debug.log "ListString" 0 in
+                                  ArrayString (Array.fromList arg_)
+                           ListInt arg_  ->
+                                  let _ = Debug.log "ListInt" 0 in
+                                  ArrayInt (Array.fromList arg_)
+                           ListFloat arg_  ->
+                                  let _ = Debug.log "ListFloat" 0 in
+                                  ArrayFloat (Array.fromList arg_)
+                in
+                Context.getFunction name context
+                    |> Maybe.map (\fn -> succeed <| fn base)
+                    |> Maybe.withDefault (problem <| "Unknown function '" ++ name ++ "'")
+            )
+--}
+
+
+rParenHelp : ( List T, List Operator ) -> Parser ( List T, List Operator )
+rParenHelp ( exprStack, operatorStack ) =
+    case ( exprStack, operatorStack ) of
+        ( es, LParenOperator :: os ) ->
+            succeed ( es, os )
+
+        ( rhs :: lhs :: es, (BinaryOp _ topOperator) :: os ) ->
+            case applyBinaryOp topOperator lhs rhs of
+                Ok t ->
+                    rParenHelp ( t :: es, os )
+
+                Err err ->
+                    problem err
+
+        otherwise ->
+            problem "Unable to parse parenthesis"
+
+
+endHelp : ( List T, List Operator ) -> Parser T
+endHelp ( exprStack,operatorStack ) =
+    case ( exprStack, operatorStack ) of
+        ( _, LParenOperator :: os ) ->
+            problem "Mismatched left parenthesis"
+
+        ( _, RParenOperator :: os ) ->
+            problem "Mismatched right parenthesis"
+
+        ( rhs :: lhs :: es, (BinaryOp _ topOperator) :: os ) ->
+            case applyBinaryOp topOperator lhs rhs of
+                Ok t ->
+                    endHelp ( t :: es, os )
+
+                Err err ->
+                    problem err
+
+        ( [ expr ], [] ) ->
+            succeed expr
+
+        otherwise ->
+            problem ""
+
+
+-----------------------------------------------------------
+type alias Stmt = String
+
+--script : Context -> Parser T
+script : Context -> Parser (List Stmt)
+script context =
+    statements
+    --commentout 
+
+{--
+commentout : Parser (Stmt)
+commentout =
+  succeed (++)
+    |.spaces
+    |. lineComment "#"
+--}
+
+statements : Parser (List Stmt)
+statements =
+  loop [] statementsHelp
+
+
+statementsHelp : List Stmt -> Parser (Step (List Stmt) (List Stmt))
+statementsHelp revStmts =
+  oneOf
+    [ succeed (\stmt -> Loop (stmt :: revStmts))
+        |. spaces
+        --|. symbol "#" |. chompWhile (\c -> c /= '\n')
+        |= statement
+        |. spaces
+        |. symbol ";"
+        |. spaces
+    , succeed ()
+        |> map (\_ -> Done (List.reverse revStmts))
+    ]
+      
+lineCommentWorkAround : String -> Parser ()
+lineCommentWorkAround start =
+    succeed () |. symbol start |. chompWhile (\c -> c /= '\n')
+
+statement : Parser String
+statement =
+  --getChompedString (chompWhile Char.isDigit)
+  getChompedString (chompWhile isUninteresting)
+    |> andThen statementCheck
+
+
+isUninteresting : Char -> Bool
+isUninteresting char =
+ -- char /= ';' && char /= '\n'
+  char /= ';' 
+
+statementCheck : String -> Parser String
+statementCheck code =
+    --succeed code
+    let
+      pattern = "#.*\n"
+      maybeRegex = Regex.fromString pattern
+      regex = Maybe.withDefault Regex.never maybeRegex
+    in
+    if Regex.contains regex code then
+      succeed code
+    else
+      succeed code
+
+zipCode : Parser String
+zipCode =
+  getChompedString (chompWhile Char.isDigit)
+    |> andThen checkZipCode
+
+checkZipCode : String -> Parser String
+checkZipCode code =
+  if String.length code == 5 then
+    succeed code
+  else
+    problem "a U.S. zip code has exactly 5 digits"
+
+-----------------------------------------------------------
+expression : Context -> Parser T
+expression context =
+    expressionHelp context ( [], [] )
+
+expressionHelp : Context -> ( List T, List Operator ) -> Parser T
+expressionHelp context ( exprStack, operatorStack ) =
+    -- let
+    --     _ =
+    --         Debug.log "stacks" ( exprStack, operatorStack )
+    -- in
+    succeed identity
+        |. spaces
+        |= oneOf
+            [ {- if the token is a number, then: -}
+              backtrackable int
+                {- push it to the output queue. -}
+                |> andThen
+                    (\i -> expressionHelp context ( IntT i :: exprStack, operatorStack ))
+
+            {- if the token is a bool, then: -}
+            , backtrackable bool
+                {- push it to the output queue. -}
+                |> andThen
+                    (\i -> expressionHelp context ( BoolT i :: exprStack, operatorStack ))
+
+            {- if the token is a var, then: -}
+            , backtrackable (var context)
+                {- push it to the output queue. -}
+                |> andThen
+                    --(\i -> expressionHelp context ( IntT i :: exprStack, operatorStack ))
+                    (\i -> 
+                            case i of
+                                IntT i_ ->
+                                    expressionHelp context ( IntT i_ :: exprStack, operatorStack )
+                                BoolT i_ ->
+                                    expressionHelp context ( BoolT i_ :: exprStack, operatorStack )
+                                FloatT i_ ->
+                                    expressionHelp context ( FloatT i_ :: exprStack, operatorStack )
+                                StringT i_ ->
+                                    expressionHelp context ( StringT i_ :: exprStack, operatorStack )
+                    )
+
+            {- if the token is a func, then: -}
+            , backtrackable (func context)
+                {- push it to the output queue. -}
+                |> andThen
+                    --(\i -> expressionHelp context ( IntT i :: exprStack, operatorStack ))
+                    (\i -> 
+                            case i of
+                                IntT i_ ->
+                                    expressionHelp context ( IntT i_ :: exprStack, operatorStack )
+                                BoolT i_ ->
+                                    expressionHelp context ( BoolT i_ :: exprStack, operatorStack )
+                                FloatT i_ ->
+                                    expressionHelp context ( FloatT i_ :: exprStack, operatorStack )
+                                StringT i_ ->
+                                    expressionHelp context ( StringT i_ :: exprStack, operatorStack )
+                    )
+
+            {- if the token is an operator, then: -}
+            , backtrackable operator
+                |> andThen
+                    (\op ->
+                        operatorHelp op ( exprStack, operatorStack )
+                            |> andThen (expressionHelp context)
+                    )
+
+            {- if the token is a left bracket (i.e. "("), then: -}
+            , backtrackable (symbol "(")
+                {- push it onto the operator stack. -}
+                |> andThen
+                    (\i -> expressionHelp context ( exprStack, LParenOperator :: operatorStack ))
+
+            {- if the token is a right bracket (i.e. ")"), then: -}
+            , backtrackable (symbol ")")
+                |> andThen
+                    (\_ ->
+                        rParenHelp ( exprStack, operatorStack )
+                            |> andThen (expressionHelp context)
+                    )
+
+            {- if we are at the end of the input -}
+            , end |> andThen (\_ -> endHelp ( exprStack, operatorStack ))
+            ]
+        |. spaces
+
+
+applyBinaryOp : BinaryOpDef -> T -> T -> Result String T
+applyBinaryOp { eval } lhs rhs =
+    eval lhs rhs
