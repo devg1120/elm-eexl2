@@ -145,10 +145,11 @@ statement =
       [ defVarStatement
       , defFuncStatement
       , assignStatement
-      , backtrackable ifStatement2  -- if then
+      --, backtrackable ifStatement2  -- if then
       , backtrackable ifStatement   -- if then else
       , backtrackable ifStatement3  -- if then elsif else
       , backtrackable ifStatement4  -- if then elsif
+      , backtrackable ifStatement2  -- if then
       , backtrackable caseStatement -- case
       , whileStatement
       , forStatement
@@ -244,11 +245,11 @@ ifStatement2 =
     |. spaces
     |= lazy (\_ -> expression)
     |. spaces
-    |. keyword "then"
+    |. keyword "{"
     |. spaces
     |= lazy (\_ -> statements)
     |. spaces
-    |. keyword "end"
+    |. keyword "}"
     |. spaces
 
 
@@ -260,9 +261,12 @@ elsIfBlock  =
     |. spaces
     |= lazy (\_ -> expression)
     |. spaces
-    |. keyword "then"
+    --|. keyword "then"
+    |. keyword "{"
     |. spaces
     |= lazy (\_ -> statements)
+    |. spaces
+    |. keyword "}"
     |. spaces
    -- |> andThen
    --      (\( expr, stmts) ->
@@ -300,17 +304,25 @@ ifStatement3 =
     |. spaces
     |= lazy (\_ -> expression)
     |. spaces
-    |. keyword "then"
+    --|. keyword "then"
+    |. keyword "{"
     |. spaces
     |= lazy (\_ -> statements)
     |. spaces
+    |. keyword "}"
+    |. spaces
     |= lazy (\_ -> elsIfBlocks)
+    --|. spaces
+    --|. keyword "}"
     |. spaces
     |. keyword "else"
     |. spaces
+    |. keyword "{"
+    |. spaces
     |= lazy (\_ -> statements)
     |. spaces
-    |. keyword "end"
+    --|. keyword "end"
+    |. keyword "}"
     |. spaces
 
 ifStatement4 : Parser Statement 
@@ -321,17 +333,17 @@ ifStatement4 =
     |. spaces
     |= lazy (\_ -> expression)
     |. spaces
-    |. keyword "then"
+    --|. keyword "then"
+    |. keyword "{"
     |. spaces
     |= lazy (\_ -> statements)
     |. spaces
+    |. keyword "}"
+    |. spaces
     |= lazy (\_ -> elsIfBlocks)
     |. spaces
-    --|. keyword "else"
-    --|. spaces
-    --|= lazy (\_ -> statements)
-    --|. spaces
-    |. keyword "end"
+    --|. keyword "end"
+    --|. keyword "}"
     |. spaces
 
 caseStatement : Parser Statement 
@@ -342,11 +354,11 @@ caseStatement =
     |. spaces
     |= lazy (\_ -> expression)
     |. spaces
-    |. keyword "do"
+    |. keyword "{"
     |. spaces
     |= lazy (\_ -> caseBlocks)
     |. spaces
-    |. keyword "end"
+    |. keyword "}"
     |. spaces
 
 caseBlock :  Parser (Expr,(List Statement))
@@ -417,11 +429,11 @@ whileStatement =
     --|= lazy (\_ -> typeVar)
     |= lazy (\_ -> expression)
     |. spaces
-    |. symbol "do"
+    |. symbol "{"
     |. spaces
     |= lazy (\_ -> statements)
     |. spaces
-    |. symbol "end"
+    |. symbol "}"
     |. spaces
 
 
@@ -439,11 +451,11 @@ forStatement =
     --|= lazy (\_ -> typeVar)
     |= lazy (\_ -> expression)
     |. spaces
-    |. keyword "do"
+    |. keyword "{"
     |. spaces
     |= lazy (\_ -> statements)
     |. spaces
-    |. keyword "end"
+    |. keyword "}"
     |. spaces
 
 ------------------------------------------------------------------
@@ -1325,64 +1337,64 @@ exec2 script_name =
 
 ------------------------------------------------------------------
 input3 = """
-   total = 0;
+   let total = 0;
 
 
-   aaa = 100;
-   bbb = 200;
-   ccc = 300;
-   aa = 0;
-   bb = 0;
-   cc = 0;
+   let aaa = 100;
+   let bbb = 200;
+   let ccc = 300;
+   let aa = 0;
+   let bb = 0;
+   let cc = 0;
 
 
-   if aaa < bbb then
+   if aaa < bbb{
       aa = 1;
-    else 
+   } else {
       bb=  1;
-   end
+   }
 
-   if aaa < bbb then
+   if aaa < bbb {
       aa = aa + 2;
-   end
+   }
 
 
-   za = 100;
-   zb = 200;
-   zc = 300;
-   zd = 400;
+   let za = 100;
+   let zb = 200;
+   let zc = 300;
+   let zd = 400;
 
-   z = 0;
-
-   if za > zb then
+   let z = 0;
+/*
+   if za > zb {
       z = 1;
-    elsif  za > zc then
+    } elsif  za > zc {
       z=  2;
-    elsif  za > zd then
+    } elsif  za > zd {
       z=  3;
-    else 
+    } else {
       z=  4;
-   end
+   }
 
 
-   xa = 350;
-   xb = 200;
-   xc = 300;
-   xd = 400;
+   let xa = 350;
+   let xb = 200;
+   let xc = 300;
+   let xd = 400;
 
-   x = 0;
+   let x = 0;
 
-   if xa < xb then
+   if xa < xb {
       x = 1;
-    elsif  xa < xc then
+    } elsif  xa < xc {
       x=  2;
-    elsif  xa < xd then
+    } elsif  xa < xd {
       x=  3;
-   end
-
-   ca = 6;
-   re = 0;
-   case ca do
+   }
+*/
+   let ca = 6;
+   let re = 0;
+   case ca {
        0:
           re = 1;
        1:
@@ -1392,8 +1404,49 @@ input3 = """
    
        default:
         re = 5;
-   end
+   }
 
+
+"""
+
+input5 = """
+
+
+   let za = 150;
+   let zb = 400;
+   let zc = 300;
+   let zd = 200;
+
+   let z = 0;
+
+   if za > zb {
+      z = 1;
+    } elsif  za > zc {
+      z=  2;
+    } elsif  za > zd {
+      z=  3;
+    } else {
+      z=  4;
+   }
+
+"""
+input6 = """
+
+
+   let za = 350;
+   let zb = 400;
+   let zc = 300;
+   let zd = 200;
+
+   let z = 0;
+
+   if za > zb {
+      z = 1;
+    } elsif  za > zc {
+      z=  2;
+    } elsif  za > zd {
+      z=  3;
+   }
 
 """
 
@@ -1574,71 +1627,71 @@ script2 = """
 
 """
 script3 = """
-  var a = 1;
-  var b = 0;
-  var c = 0;
+  let a = 1;
+  let b = 0;
+  let c = 0;
 
 
-  def test ( a, b, c) do
+  fn test ( a, b, c) {
      a = a + b + c;
 
      return a;
 
-  end
+  }
 
-  def str ( l, r ) do
+  fn str ( l, r ) {
      return strjoin(l, r) ;
-  end
+  }
 
-  if a > 1 then
+  if a > 1 {
      b = 1;
-  else
-     var b = 2;
+  } else {
+     let b = 2;
      c = 1;
-  end
+  }
    a = 100;
 
   c = strjoin("ABC", "abc"); //lib
 
-  var e1 = "abc";
-  var e2 = "ABC";
+  let e1 = "abc";
+  let e2 = "ABC";
 
-  var e = strjoin(e1, e2); //lib
+  let e = strjoin(e1, e2); //lib
 
-  var d = test(1,2,3);       //user func
+  let d = test(1,2,3);       //user func
 
-  var ss = str("xyz", "1XYZ");
+  let ss = str("xyz", "1XYZ");
 
   return a;
 
 """
 script4 = """
-   var total = 0;
+   let total = 0;
 
-   var ok = 0;
+   let ok = 0;
 
-   for ok in [1,2,3,4,5,6,7,8,9] do
+   for ok in [1,2,3,4,5,6,7,8,9] {
 
     total = total + ok;
 
-   end
+   }
 
 """
 script5 = """
-   var total = 0;
+   let total = 0;
 
-   var ok = 0;
+   let ok = 0;
 
-   while total < 45 do
+   while total < 45 {
 
     //total = total + 1;
 
-    if total > 10 then
+    if total > 10 {
         break;
-    end
+    }
     total = total + 1;
 
-   end
+   }
 
    //break;
 
@@ -1646,72 +1699,71 @@ script5 = """
 
 """
 script6 = """
-   var total = 0;
+   let total = 0;
 
-   var ok = 0;
+   let ok = 0;
 
-   for ok in [1,2,3,4,5,6,7,8,9] do
+   for ok in [1,2,3,4,5,6,7,8,9] {
 
     total = total + ok;
-    if total > 10 then
+    if total > 10 {
         break;
-    end
+    }
 
-   end
+   }
 
 """
 script7 = """
-  var a = 1;
-  var b = 0;
-  var c = 0;
+  let a = 1;
+  let b = 0;
+  let c = 0;
 
 
-  def test ( a, b, c) do
+  fn test ( a, b, c) {
      a = a + b + c;
 
-     if a > 1 then
+     if a > 1 {
         a = 0;
-     end
+     }
 
      return a;
 
-  end
+  }
 
-  def test2 (a) do
+  fn test2 (a) {
 
-     if a > 1 then
+     if a > 1 {
         a = 100;
-     end
+     }
 
      return a;
 
-  end
+  }
 
-  def str ( l, r ) do
+  fn str( l, r ) {
      return strjoin(l, r) ;
-  end
+  }
 
-  if a > 1 then
+  if a > 1 {
      b = 1;
-  else
-     var b = 2;
+  } else {
+     let b = 2;
      c = 1;
-  end
+  }
    a = 100;
 
   c = strjoin("ABC", "abc"); //lib
 
-  var e1 = "abc";
-  var e2 = "ABC";
+  let e1 = "abc";
+  let e2 = "ABC";
 
-  var e = strjoin(e1, e2); //lib
+  let e = strjoin(e1, e2); //lib
 
-  var d = test(1,2,3);       //user func
-  var d2 = test2(2);       //user func
+  let d = test(1,2,3);       //user func
+  let d2 = test2(2);       //user func
 
-  var ss = str("xyz", "1XYZ");
+  let ss = str("xyz", "1XYZ");
 
-  return a;
 
 """
 
@@ -1853,25 +1905,6 @@ let e = strjoin(e1, e2); //lib
 
 """
 
-sum = """
-def sum (n) do
-
-  var a = 0;
-
-  if n < 2 then
-      return n;
-  else
-
-  var m = n -1;
-  var x = sun(m);
-  var z = m + x;
-  return z;
-  end
-end
-
-var result = sum(9);
-
-"""
 
 {--
 
